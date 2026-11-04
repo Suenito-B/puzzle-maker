@@ -112,15 +112,16 @@ function ribbon(segs,wid){
 const extMat=mkBrush2(.75,1,.97,0);
 const lineMatR=mkBrush2(.4,0,.8,1),extMatR=mkBrush2(.25,1,.97,0);
 const refl=new THREE.Group();refl.scale.y=-1;lvl.add(refl);
-const waterU={time:{value:0},c:{value:new THREE.Color(0xf2f1ec)},op:{value:.62}};
+const waterU={flow:{value:1},time:{value:0},c:{value:new THREE.Color(0xf2f1ec)},op:{value:.62}};
 const water=new THREE.Mesh(new THREE.PlaneGeometry(20,13).rotateX(-Math.PI/2),new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:waterU,
  vertexShader:'varying vec2 u;void main(){u=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
- fragmentShader:`uniform float time,op;uniform vec3 c;varying vec2 u;
+ fragmentShader:`uniform float time,op,flow;uniform vec3 c;varying vec2 u;
 float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1.,0.)),f.x),mix(h(i+vec2(0.,1.)),h(i+vec2(1.,1.)),f.x),f.y);}
 void main(){vec2 p=(u-.5)*2.;float r=length(p*vec2(1.,1.35));float edge=1.-smoothstep(.35,1.,r);
-float s=vn(vec2(u.x*4.+time*.04,u.y*60.+sin(time*.3+u.x*5.)*.8));float streak=.3+.7*smoothstep(.25,.85,s);
-float rip=.85+.15*sin(u.y*90.+time*.8);gl_FragColor=vec4(c,edge*streak*rip*op);}`}));
+#define LY(sp,sc,yf,cu) smoothstep(.25,.85,vn(vec2(u.x*(sc)-time*(sp)*flow,u.y*(yf)+(vn(vec2(u.x*1.6-time*(sp)*.5*flow,u.y*2.+(sp)))-.5)*(cu))))
+float streak=.3+.7*(.5*LY(.12,4.,60.,20.)+.3*LY(.07,3.,35.,14.)+.2*LY(.2,6.,90.,10.));
+float rip=.85+.15*sin(u.y*90.+time*.8*flow);gl_FragColor=vec4(c,edge*streak*rip*op);}`}));
 water.position.set(5,.03,1.5);water.renderOrder=-3;lvl.add(water);
 function buildRefl(){
  while(refl.children.length)refl.remove(refl.children[0]);
@@ -169,6 +170,7 @@ function clash(g){if(g.k==='ball')return false;return level.some(q=>{if(q.k==='b
  if(g.a===90&&q.a===90){if(g.r%2!==q.r%2)return false;const ev=g.r%2===0;if(Math.abs(ev?q.x-g.x:q.z-g.z)>.01)return false;return Math.abs(ev?q.z-g.z:q.x-g.x)<g.d/2+q.d/2-.001&&Math.abs(q.y-g.y)<(g.L+q.L)/2-.001}
  if(g.a===0&&q.a===0){if(Math.abs(q.y-g.y)>.01)return false;const[a,b]=ext(g),[c,d]=ext(q);return Math.abs(q.x-g.x)<a+c-.001&&Math.abs(q.z-g.z)<b+d-.001}
  return q.k===g.k&&q.x===g.x&&q.y===g.y&&q.z===g.z&&q.r===g.r&&q.a===g.a&&q.d===g.d})}
+const vPos=new THREE.Vector3(),vDir=new THREE.Vector3(0,0,-1);let hasPose=false;
 function wallSnap(g,h,pt){
  if(!h||h.a!==90||g.a!==90)return;
  const ev=h.r%2===0,hd=h.d/2,gd=g.d/2,al=ev?pt.z-h.z:pt.x-h.x,dy=pt.y-h.y;
@@ -178,7 +180,7 @@ function wallSnap(g,h,pt){
 const ray=new THREE.Raycaster();let ghost=null,gkey='',gp=null,gvalid=false,etarget=null;
 function updateGhost(){
  if(playing||!placed){if(ghost){lvl.remove(ghost);ghost=null;gkey=''}return}
- const c=renderer.xr.isPresenting?renderer.xr.getCamera(cam):cam,o=new THREE.Vector3(),d=new THREE.Vector3();c.getWorldPosition(o);c.getWorldDirection(d);ray.set(o,d);
+ const o=new THREE.Vector3(),d=new THREE.Vector3();if(renderer.xr.isPresenting){if(!hasPose)return;o.copy(vPos);d.copy(vDir)}else{cam.getWorldPosition(o);cam.getWorldDirection(d)}ray.set(o,d);
  const hit=ray.intersectObjects([...pieces.children,plane],true)[0];
  pieces.traverse(m=>{if(m.material&&m.material.emissive)m.material.emissive.setHex(0)});
  gp=null;etarget=null;
@@ -202,7 +204,7 @@ function place(){
  level.push(gp);rebuild()}
 function onSelect(){
  if(!placed){if(!reticle.visible&&renderer.xr.isPresenting)return;
-  if(renderer.xr.isPresenting){root.position.setFromMatrixPosition(reticle.matrix);const f=new THREE.Vector3();renderer.xr.getCamera(cam).getWorldDirection(f);root.rotation.y=Math.atan2(-f.x,-f.z)}
+  if(renderer.xr.isPresenting){root.position.setFromMatrixPosition(reticle.matrix);const f=vDir.clone();f.y=0;f.normalize();root.rotation.y=Math.atan2(-f.x,-f.z)}
   root.visible=true;placed=true;reticle.visible=false;$('msg').textContent='';info()}
  else place()}
 
@@ -241,6 +243,7 @@ btn($('topbtns'),'Play',()=>playing?stopPlay():startPlay(),'go').id='go';
 btn($('topbtns'),'Reset',()=>{$('msg').textContent='';ended=false;stopPlay()});
 btn($('topbtns'),'⋯',()=>acts.classList.toggle('open'));
 btn(acts,'Move level',()=>{if(playing)stopPlay();placed=false;$('msg').textContent='Aim at a surface and tap to place';acts.classList.remove('open')});
+btn(acts,'Water: flowing',b=>{waterU.flow.value=waterU.flow.value?0:1;b.textContent='Water: '+(waterU.flow.value?'flowing':'still');acts.classList.remove('open')});
 let darkLines=true;
 btn(acts,'Lines: dark',b=>{darkLines=!darkLines;INK=darkLines?0x151515:0xf4f4f0;fillOp=darkLines?.62:.38;lineMat.uniforms.c.value.setHex(INK);extMat.uniforms.c.value.setHex(INK);lineMatR.uniforms.c.value.setHex(INK);extMatR.uniforms.c.value.setHex(INK);waterU.c.value.setHex(darkLines?0xf2f1ec:0x1b1f26);waterU.op.value=darkLines?.62:.5;reticle.material.color.setHex(INK);grid.material.vertexColors=false;grid.material.color.setHex(INK);grid.material.needsUpdate=true;b.textContent='Lines: '+(darkLines?'dark':'light');setMist();acts.classList.remove('open');rebuild()});
 btn(acts,'Demo',()=>{if(playing)stopPlay();level=demo();rebuild()});
@@ -273,11 +276,13 @@ $('ar').onclick=startAR;$('pv').onclick=startPreview;
 let last=0;
 renderer.setAnimationLoop((t,frame)=>{
  const dt=Math.min(.05,(t-last)/1000||0);last=t;
+ const rs=renderer.xr.getReferenceSpace();
+ if(frame&&rs){const vp=frame.getViewerPose(rs);if(vp){const pm=new THREE.Matrix4().fromArray(vp.transform.matrix);vPos.setFromMatrixPosition(pm);vDir.set(0,0,-1).transformDirection(pm);hasPose=true}}
  if(frame&&hts&&!placed){const r=frame.getHitTestResults(hts);
   if(r.length){reticle.visible=true;reticle.matrix.fromArray(r[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix)}else reticle.visible=false}
  if(playing&&world&&!ended)stepSim(dt);
  const ss=renderer.xr.isPresenting&&renderer.xr.getSession();if(ss&&ss.renderState.baseLayer){const bl=ss.renderState.baseLayer;resU.value.set(bl.framebufferWidth,bl.framebufferHeight)}else renderer.getDrawingBufferSize(resU.value);
- {const s=t/1000;waterU.time.value=s;refl.position.x=Math.sin(s*.7)*.04;refl.scale.x=1+Math.sin(s*.9)*.008}
+ {const s=t/1000;waterU.time.value=s;const fl=waterU.flow.value;refl.position.x=Math.sin(s*.7)*.04*fl;refl.scale.x=1+Math.sin(s*.9)*.008*fl}
  updateGhost();if(ctl.enabled)ctl.update();
  renderer.render(scene,cam)});
 addEventListener('resize',()=>{if(!renderer.xr.isPresenting){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}});
