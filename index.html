@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Panel puzzle AR</title>
+<style>
+:root{--bg:#e9e6df;--fg:#151515;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#11151a;--fg:#e8ece6}}
+:root[data-theme="dark"]{--bg:#11151a;--fg:#e8ece6}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden;overscroll-behavior:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center;background:var(--bg);z-index:5}
+#start h1{margin:0;font-size:26px}#start p{margin:0;max-width:320px;line-height:1.5;font-size:15px}
+.sb{padding:14px 26px;border:1.5px solid var(--fg);border-radius:3px;background:transparent;color:var(--fg);font-size:17px;font-weight:600}
+.sb.f{background:var(--fg);color:var(--bg)}
+#ui{display:none;position:fixed;inset:0;z-index:10;pointer-events:none;color:#fff;text-shadow:0 1px 4px #000}
+#ui>*{pointer-events:auto}
+#top{position:absolute;left:0;top:0;padding:10px 14px;padding-right:150px;font-size:14px;line-height:1.4;pointer-events:none}
+#msg{font-size:19px;font-weight:600}
+.b{flex:none;padding:9px 12px;border:1.5px solid #151515;border-radius:3px;background:rgba(255,255,255,.72);color:#151515;font-size:14px;font-weight:500;text-shadow:none}
+.b.on,.b.go{background:#151515;color:#fff}
+.row{display:flex;gap:6px;overflow-x:auto;padding:3px 0}
+#topbtns{position:absolute;right:10px;top:10px;display:flex;gap:6px}
+#acts{display:none;position:absolute;right:10px;top:60px;flex-direction:column;gap:6px;padding:8px;background:rgba(255,255,255,.85);border:1.5px solid #151515;border-radius:3px}
+#acts.open{display:flex}
+#bar{position:absolute;left:0;right:0;bottom:0;padding:6px 8px 12px}
+#sc{display:flex;align-items:center;gap:8px;padding:4px 6px;font-size:13px}#sc input{flex:1}
+#lay{position:absolute;right:2px;top:26%;height:34%;width:18px;opacity:.45;writing-mode:vertical-lr;direction:rtl}
+#dot{position:absolute;left:50%;top:50%;width:3px;height:3px;margin:-1.5px 0 0 -1.5px;border-radius:50%;background:rgba(255,255,255,.6);box-shadow:0 0 0 .5px rgba(0,0,0,.35);pointer-events:none}
+</style>
+</head>
+<body>
+<div id="start"><h1>Panel puzzle AR</h1><p id="st">Checking AR support…</p><button class="sb f" id="ar" disabled>Start AR</button><button class="sb" id="pv">Preview without AR</button></div>
+<div id="ui">
+<div id="top"><div id="msg"></div><div id="info"></div></div>
+<div id="dot"></div><div id="topbtns"></div><div id="acts"></div>
+<input type="range" id="lay" min="0" max="9" step="0.5" value="0" aria-label="Layer height">
+<div id="bar"><div id="sc"><span id="scl">12 cm per cell</span><input type="range" id="scr" min="4" max="100" value="12" aria-label="Scale"></div><div class="row" id="tools"></div></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const T=.12,BR=.28,INK=0x151515;
+const F=(x,y,z,d,k)=>({k:k||'solid',a:0,L:1,d:d||1,x,y,z,r:0});
+const RP=(x,y,z,r,g)=>({k:'solid',a:g?26.565:45,L:g?1.118:1.414,d:1,x,y,z,r});
+const demo=()=>[F(1.5,4.5,1.5),{k:'ball',x:1.5,y:4.84,z:1.5},RP(2.5,4,1.5,2),RP(3.5,3,1.5,2),F(4.5,2.5,1.5),F(5.5,2.5,1.5,1,'spike'),F(6.5,2.5,1.5),{k:'solid',a:90,L:1,d:1,x:7,y:3,z:1.5,r:0},F(7.5,2.5,1.5,.5),F(8.5,2.5,1.5,1,'goal')];
+let level=demo(),tool='floor',rot=0,layer=0,playing=false,half=false,placed=false,cell=.12,hts=null;
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.xr.enabled=true;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene(),cam=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.01,100);
+scene.add(new THREE.AmbientLight(0xffffff,.6));const sun=new THREE.DirectionalLight(0xffffff,.75);sun.position.set(-5,12,6);scene.add(sun);
+const root=new THREE.Group(),lvl=new THREE.Group();lvl.position.set(-5,0,-1.5);root.add(lvl);scene.add(root);root.scale.setScalar(cell);root.visible=false;
+const grid=new THREE.GridHelper(10,20,0x333333,0x555555);grid.material.transparent=true;grid.material.opacity=.3;grid.position.set(5,0,5);lvl.add(grid);
+const plane=new THREE.Mesh(new THREE.PlaneGeometry(10,10).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));plane.position.set(5,0,5);lvl.add(plane);
+const pieces=new THREE.Group(),inkG=new THREE.Group();lvl.add(pieces);lvl.add(inkG);
+const reticle=new THREE.Mesh(new THREE.RingGeometry(.1,.13,32).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x151515}));reticle.matrixAutoUpdate=false;reticle.visible=false;scene.add(reticle);
+const ctl=new THREE.OrbitControls(cam,renderer.domElement);ctl.enabled=false;ctl.touches={ONE:THREE.TOUCH.PAN,TWO:THREE.TOUCH.DOLLY_ROTATE};ctl.rotateSpeed=2.4;
+
+function mk(p){
+ const g=new THREE.Group();
+ if(p.k==='ball'){g.add(new THREE.Mesh(new THREE.SphereGeometry(BR,16,12),new THREE.MeshLambertMaterial({color:INK})));g.position.set(p.x,p.y,p.z)}
+ else{
+  const m=new THREE.MeshLambertMaterial({color:0xffffff,transparent:true,opacity:.62,depthWrite:false});
+  const bx=new THREE.BoxGeometry(p.L+.02,T,p.d+.02);g.add(new THREE.Mesh(bx,m));
+  const dp=new THREE.Mesh(bx,new THREE.MeshBasicMaterial({colorWrite:false,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}));dp.renderOrder=-1;g.add(dp);
+  if(p.k==='spike'){const n=p.d>.6?3:2;for(let i=0;i<3;i++)for(let j=0;j<n;j++){const c=new THREE.Mesh(new THREE.ConeGeometry(.12,.4,6),new THREE.MeshLambertMaterial({color:INK}));c.position.set(-.33+i*.33,.26,(j-(n-1)/2)*.33);g.add(c)}}
+  g.position.set(p.x,p.y,p.z);g.rotation.order='YZX';g.rotation.set(0,p.r*Math.PI/2,p.a*Math.PI/180)}
+ g.userData.p=p;return g}
+const lineMat=new THREE.LineBasicMaterial({color:INK});
+const extMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{c:{value:new THREE.Color(INK)}},vertexShader:'attribute float a;varying float v;void main(){v=a;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:'uniform vec3 c;varying float v;void main(){gl_FragColor=vec4(c,v);}'});
+const FI=[[0,2,6,4],[1,3,7,5],[0,1,5,4],[2,3,7,6],[0,1,3,2],[4,5,7,6]],FN=[[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
+const vk=v=>[v.x,v.y,v.z].map(a=>Math.round(a*1000)).join(',');
+function buildLines(){
+ while(inkG.children.length)inkG.remove(inkG.children[0]);
+ const faces=[],seen={};
+ for(const g of pieces.children){const p=g.userData.p;if(p.k==='ball')continue;const q=g.quaternion,cs=[];
+  for(let i=0;i<8;i++)cs.push(new THREE.Vector3((i&1?1:-1)*p.L/2,(i&2?1:-1)*T/2,(i&4?1:-1)*p.d/2).applyQuaternion(q).add(g.position));
+  FI.forEach((f,j)=>{const vs=f.map(i=>cs[i]),n=new THREE.Vector3(...FN[j]).applyQuaternion(q),sk=vs.map(vk).sort().join('|');
+   const o={vs,nk:[n.x,n.y,n.z].map(a=>Math.round(a*10)).join(),sk};faces.push(o);(seen[sk]=seen[sk]||[]).push(o)})}
+ const keep=faces.filter(f=>seen[f.sk].length<2),cnt={};
+ const ek=(f,i)=>{const a=vk(f.vs[i]),b=vk(f.vs[(i+1)%4]);return f.nk+'|'+(a<b?a+'|'+b:b+'|'+a)};
+ keep.forEach(f=>{for(let i=0;i<4;i++){const k=ek(f,i);cnt[k]=(cnt[k]||0)+1}});
+ const pos=[],vtx={};
+ keep.forEach(f=>{for(let i=0;i<4;i++)if(cnt[ek(f,i)]===1){const a=f.vs[i],b=f.vs[(i+1)%4];pos.push(a.x,a.y,a.z,b.x,b.y,b.z);vtx[vk(a)]=a;vtx[vk(b)]=b}});
+ const vs=Object.values(vtx);if(!vs.length)return;
+ inkG.add(new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(pos,3)),lineMat));
+ const c=new THREE.Vector3();vs.forEach(v=>c.add(v));c.multiplyScalar(1/vs.length);
+ const ep=[],ea=[],used={};
+ for(const v of vs){const r=[v.x,v.y,v.z].map(a=>Math.round(a*4)/4);
+  for(let ax=0;ax<3;ax++){const k=ax+':'+r.join();if(used[k])continue;used[k]=1;const s=v.getComponent(ax)>=c.getComponent(ax)?1:-1,e=r.slice();e[ax]+=s*1.6;ep.push(...r,...e);ea.push(.5,0)}}
+ const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(ep,3));eg.setAttribute('a',new THREE.Float32BufferAttribute(ea,1));
+ inkG.add(new THREE.LineSegments(eg,extMat))}
+function rebuild(){while(pieces.children.length)pieces.remove(pieces.children[0]);level.forEach(p=>pieces.add(mk(p)));buildLines();grid.position.y=plane.position.y=layer;info()}
+function info(){if(!playing&&placed)$('info').textContent=(tool==='erase'?'Erase':tool+(half?' (half)':'')+' · rot '+rot*90+'°')+' · layer '+layer}
+
+const S=(v,g,o)=>Math.round((v-o)/g)*g+o;
+function snap(px,py,pz){
+ const g=.5,ev=rot%2===0;let p={k:'solid',a:0,L:1,d:half?.5:1,r:rot};
+ if(tool==='spikes')p.k='spike';if(tool==='goal')p.k='goal';
+ if(tool==='ball')return{k:'ball',x:S(px,.5,0),y:py+.34,z:S(pz,.5,0)};
+ if(tool==='wall'){p.a=90;p.x=ev?S(px,g,0):S(px,g,.5);p.z=ev?S(pz,g,.5):S(pz,g,0);p.y=S(py,g,0)+.5;if(half){if(ev)p.z=S(pz,.5,.25);else p.x=S(px,.5,.25)}}
+ else{p.x=S(px,g,.5);p.z=S(pz,g,.5);p.y=S(py,g,0);
+  if(tool==='ramp'||tool==='gramp'){const gt=tool==='gramp',h=gt?.5:1;p.a=gt?26.565:45;p.L=gt?1.118:1.414;p.y+=h/2}
+  if(half){if(ev)p.z=S(pz,.5,.25);else p.x=S(px,.5,.25)}}
+ return p}
+const ext=p=>p.r%2?[p.d/2,p.L/2]:[p.L/2,p.d/2];
+function clash(g){if(g.k==='ball')return false;return level.some(q=>{if(q.k==='ball')return false;
+ if(g.a===0&&q.a===0){if(Math.abs(q.y-g.y)>.01)return false;const[a,b]=ext(g),[c,d]=ext(q);return Math.abs(q.x-g.x)<a+c-.001&&Math.abs(q.z-g.z)<b+d-.001}
+ return q.k===g.k&&q.x===g.x&&q.y===g.y&&q.z===g.z&&q.r===g.r&&q.a===g.a&&q.d===g.d})}
+const ray=new THREE.Raycaster();let ghost=null,gkey='',gp=null,gvalid=false,etarget=null;
+function updateGhost(){
+ if(playing||!placed){if(ghost){lvl.remove(ghost);ghost=null;gkey=''}return}
+ const c=renderer.xr.isPresenting?renderer.xr.getCamera(cam):cam,o=new THREE.Vector3(),d=new THREE.Vector3();c.getWorldPosition(o);c.getWorldDirection(d);ray.set(o,d);
+ const hit=ray.intersectObjects([...pieces.children,plane],true)[0];
+ pieces.traverse(m=>{if(m.material&&m.material.emissive)m.material.emissive.setHex(0)});
+ gp=null;etarget=null;
+ if(hit){let ob=hit.object;while(ob&&!ob.userData.p&&ob!==plane)ob=ob.parent;
+  if(tool==='erase'){if(ob&&ob.userData.p){etarget=ob.userData.p;ob.traverse(m=>{if(m.material&&m.material.emissive)m.material.emissive.setHex(0x992222)})}}
+  else{const pt=lvl.worldToLocal(hit.point.clone());gp=snap(pt.x,ob===plane?layer:pt.y,pt.z);
+   const hp=ob.userData&&ob.userData.p;
+   if(hp&&hp.a===0&&hp.k!=='ball'&&gp.a===0&&gp.k!=='ball'){
+    const[hx,hz]=ext(hp),[gx,gz]=ext(gp),dx=pt.x-hp.x,dz=pt.z-hp.z;gp.y=hp.y;
+    if(Math.abs(dx)/hx>Math.abs(dz)/hz){gp.x=hp.x+Math.sign(dx)*(hx+gx);gp.z=gz<=hz?Math.max(hp.z-hz+gz,Math.min(hp.z+hz-gz,gp.z)):hp.z}
+    else{gp.z=hp.z+Math.sign(dz)*(hz+gz);gp.x=gx<=hx?Math.max(hp.x-hx+gx,Math.min(hp.x+hx-gx,gp.x)):hp.x}}}}
+ gvalid=!!gp&&gp.x>=0&&gp.x<=10&&gp.z>=0&&gp.z<=10&&gp.y>=0&&gp.y<=9&&!clash(gp);
+ const key=JSON.stringify([gp,gvalid]);
+ if(key!==gkey){gkey=key;if(ghost){lvl.remove(ghost);ghost=null}
+  if(gp){ghost=mk(gp);ghost.traverse(m=>{if(m.material){m.material=m.material.clone();m.material.transparent=true;m.material.opacity=.55;m.material.color.setHex(gvalid?0x3fa34d:0xe24b4a)}});lvl.add(ghost)}}}
+function place(){
+ if(playing)return;
+ if(tool==='erase'){if(etarget){level=level.filter(q=>q!==etarget);rebuild()}return}
+ if(!gp||!gvalid)return;
+ if(gp.k==='ball'||gp.k==='goal')level=level.filter(q=>q.k!==gp.k);
+ level.push(gp);rebuild()}
+function onSelect(){
+ if(!placed){if(!reticle.visible&&renderer.xr.isPresenting)return;
+  if(renderer.xr.isPresenting){root.position.setFromMatrixPosition(reticle.matrix);const f=new THREE.Vector3();renderer.xr.getCamera(cam).getWorldDirection(f);root.rotation.y=Math.atan2(-f.x,-f.z)}
+  root.visible=true;placed=true;reticle.visible=false;$('msg').textContent='';info()}
+ else place()}
+
+let world,hz,goal,ballP,bb,bm,acc=0,simT=0,ended=false;
+function startPlay(){
+ ballP=level.find(p=>p.k==='ball');goal=level.find(p=>p.k==='goal');
+ if(!placed||!ballP||!goal){$('msg').textContent=placed?'Place a ball and a goal first':'Place the level first';return}
+ world=new CANNON.World();world.gravity.set(0,-9.8,0);world.solver.iterations=12;
+ world.defaultContactMaterial.friction=.45;world.defaultContactMaterial.restitution=.1;
+ hz=level.filter(p=>p.k==='spike');
+ for(const g of pieces.children){const p=g.userData.p;if(p.k==='ball'||p.k==='spike')continue;
+  const b=new CANNON.Body({mass:0});b.addShape(new CANNON.Box(new CANNON.Vec3(p.L/2+.01,T/2,p.d/2+.01)));
+  b.position.set(p.x,p.y,p.z);b.quaternion.set(g.quaternion.x,g.quaternion.y,g.quaternion.z,g.quaternion.w);world.add(b)}
+ bb=new CANNON.Body({mass:1,shape:new CANNON.Sphere(BR),linearDamping:.05,angularDamping:.1});
+ bb.position.set(ballP.x,ballP.y,ballP.z);bb.velocity.set(1,0,0);world.add(bb);
+ bm=pieces.children.find(g=>g.userData.p===ballP);
+ playing=true;ended=false;acc=0;simT=0;$('msg').textContent='';$('go').textContent='Stop'}
+function stopPlay(){playing=false;world=null;$('go').textContent='Play';rebuild()}
+function finish(t){ended=true;$('msg').textContent=t;setTimeout(()=>{if(ended){$('msg').textContent='';stopPlay()}},1800)}
+const stars=t=>t<=6?3:t<=10?2:1;
+const inFoot=(s,p,m)=>{const[a,b]=ext(s);return Math.abs(p.x-s.x)<a+m&&Math.abs(p.z-s.z)<b+m};
+function stepSim(dt){
+ acc+=dt*(renderer.xr.isPresenting?Math.min(2.5,1/Math.sqrt(cell)):1);
+ while(acc>=1/120&&!ended){world.step(1/120);simT+=1/120;acc-=1/120;const p=bb.position;
+  if(p.y<0||hz.some(s=>inFoot(s,p,.1)&&p.y-BR<s.y+.5&&p.y>s.y-.5)){finish('Failed. Resetting…');break}
+  if(inFoot(goal,p,0)&&p.y>goal.y&&p.y<goal.y+1){finish('Goal in '+simT.toFixed(1)+'s · '+'★'.repeat(stars(simT))+'☆'.repeat(3-stars(simT)));break}}
+ bm.position.set(bb.position.x,bb.position.y,bb.position.z);$('info').textContent='Time '+simT.toFixed(1)+'s'}
+
+const tools=$('tools'),acts=$('acts'),tb={};
+function btn(parent,label,fn,cls){const b=document.createElement('button');b.className='b '+(cls||'');b.textContent=label;b.onclick=()=>fn(b);parent.appendChild(b);return b}
+btn(tools,'⟲',()=>{rot=(rot+3)%4;info()});btn(tools,'⟳',()=>{rot=(rot+1)%4;info()});
+[['floor','Floor'],['wall','Wall'],['ramp','Ramp'],['gramp','Gentle ramp'],['spikes','Spikes'],['goal','Goal'],['ball','Ball'],['erase','Erase']].forEach(([t,n])=>{tb[t]=btn(tools,n,()=>{tool=t;for(const k in tb)tb[k].classList.toggle('on',k===t);info()})});
+tb.floor.classList.add('on');
+btn(tools,'½ width',b=>{half=!half;b.classList.toggle('on',half);info()});
+btn($('topbtns'),'Play',()=>playing?stopPlay():startPlay(),'go').id='go';
+btn($('topbtns'),'Reset',()=>{$('msg').textContent='';ended=false;stopPlay()});
+btn($('topbtns'),'⋯',()=>acts.classList.toggle('open'));
+btn(acts,'Move level',()=>{if(playing)stopPlay();placed=false;$('msg').textContent='Aim at a surface and tap to place';acts.classList.remove('open')});
+btn(acts,'Demo',()=>{if(playing)stopPlay();level=demo();rebuild()});
+btn(acts,'Clear',()=>{if(playing)stopPlay();level=[];rebuild()});
+btn(acts,'Copy level',b=>{try{navigator.clipboard.writeText(JSON.stringify(level));b.textContent='Copied'}catch(e){b.textContent='Copy failed'}setTimeout(()=>b.textContent='Copy level',1200)});
+$('lay').oninput=e=>{layer=+e.target.value;grid.position.y=plane.position.y=layer;info()};
+$('scr').oninput=e=>{cell=e.target.value/100;$('scl').textContent=e.target.value+' cm per cell';if(renderer.xr.isPresenting)root.scale.setScalar(cell)};
+for(const id of['topbtns','acts','lay','bar'])$(id).addEventListener('beforexrselect',e=>e.preventDefault());
+
+function showUI(){$('start').style.display='none';$('ui').style.display='block'}
+async function startAR(){
+ showUI();
+ try{
+  const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay'],domOverlay:{root:$('ui')}});
+  renderer.xr.setReferenceSpaceType('local');await renderer.xr.setSession(s);
+  hts=await s.requestHitTestSource({space:await s.requestReferenceSpace('viewer')});
+  s.addEventListener('select',onSelect);s.addEventListener('end',()=>location.reload());
+  root.scale.setScalar(cell);$('msg').textContent='Aim at the floor or a table, then tap to place the level'}
+ catch(e){$('ui').style.display='none';$('start').style.display='flex';$('st').textContent='Could not start AR: '+e.message}}
+function startPreview(){
+ showUI();$('ui').style.color='var(--fg)';$('ui').style.textShadow='none';placed=true;root.visible=true;root.scale.setScalar(1);$('sc').style.display='none';
+ cam.position.set(0,6,12);ctl.target.set(0,3,0);ctl.enabled=true;info();
+ let d=null;const cv=renderer.domElement;
+ cv.addEventListener('pointerdown',e=>{d={x:e.clientX,y:e.clientY,t:Date.now()}});
+ cv.addEventListener('pointerup',e=>{if(d&&Date.now()-d.t<350&&Math.hypot(e.clientX-d.x,e.clientY-d.y)<8)onSelect();d=null})}
+$('ar').onclick=startAR;$('pv').onclick=startPreview;
+(async()=>{let ok=false;try{ok=!!(navigator.xr&&await navigator.xr.isSessionSupported('immersive-ar'))}catch(e){}
+ $('ar').disabled=!ok;$('st').textContent=ok?'Place the demo level on a floor or table, then build and play. Use the slider to scale it up to life size.':'AR is not available here. It needs Chrome on an ARCore Android phone, opened over HTTPS. You can still try the editor without AR.'})();
+
+let last=0;
+renderer.setAnimationLoop((t,frame)=>{
+ const dt=Math.min(.05,(t-last)/1000||0);last=t;
+ if(frame&&hts&&!placed){const r=frame.getHitTestResults(hts);
+  if(r.length){reticle.visible=true;reticle.matrix.fromArray(r[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix)}else reticle.visible=false}
+ if(playing&&world&&!ended)stepSim(dt);
+ updateGhost();if(ctl.enabled)ctl.update();
+ renderer.render(scene,cam)});
+addEventListener('resize',()=>{if(!renderer.xr.isPresenting){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}});
+rebuild();
+</script>
+</body>
+</html>
