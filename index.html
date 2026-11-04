@@ -43,7 +43,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;touch-action:none}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-const T=.12,BR=.28,INK=0x151515;
+const T=.12,BR=.28;let INK=0x151515,fillOp=.62;
 const F=(x,y,z,d,k)=>({k:k||'solid',a:0,L:1,d:d||1,x,y,z,r:0});
 const RP=(x,y,z,r,g)=>({k:'solid',a:g?26.565:45,L:g?1.118:1.414,d:1,x,y,z,r});
 const demo=()=>[F(1.5,4.5,1.5),{k:'ball',x:1.5,y:4.84,z:1.5},RP(2.5,4,1.5,2),RP(3.5,3,1.5,2),F(4.5,2.5,1.5),F(5.5,2.5,1.5,1,'spike'),F(6.5,2.5,1.5),{k:'solid',a:90,L:1,d:1,x:7,y:3,z:1.5,r:0},F(7.5,2.5,1.5,.5),F(8.5,2.5,1.5,1,'goal')];
@@ -63,14 +63,72 @@ function mk(p){
  const g=new THREE.Group();
  if(p.k==='ball'){g.add(new THREE.Mesh(new THREE.SphereGeometry(BR,16,12),new THREE.MeshLambertMaterial({color:INK})));g.position.set(p.x,p.y,p.z)}
  else{
-  const m=new THREE.MeshLambertMaterial({color:0xffffff,transparent:true,opacity:.62,depthWrite:false});
+  const m=new THREE.MeshLambertMaterial({color:0xf4f3ef,transparent:true,opacity:fillOp,depthWrite:false});
   const bx=new THREE.BoxGeometry(p.L+.02,T,p.d+.02);g.add(new THREE.Mesh(bx,m));
   const dp=new THREE.Mesh(bx,new THREE.MeshBasicMaterial({colorWrite:false,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}));dp.renderOrder=-1;g.add(dp);
   if(p.k==='spike'){const n=p.d>.6?3:2;for(let i=0;i<3;i++)for(let j=0;j<n;j++){const c=new THREE.Mesh(new THREE.ConeGeometry(.12,.4,6),new THREE.MeshLambertMaterial({color:INK}));c.position.set(-.33+i*.33,.26,(j-(n-1)/2)*.33);g.add(c)}}
   g.position.set(p.x,p.y,p.z);g.rotation.order='YZX';g.rotation.set(0,p.r*Math.PI/2,p.a*Math.PI/180)}
  g.userData.p=p;return g}
-const lineMat=new THREE.LineBasicMaterial({color:INK});
-const extMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{c:{value:new THREE.Color(INK)}},vertexShader:'attribute float a;varying float v;void main(){v=a;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:'uniform vec3 c;varying float v;void main(){gl_FragColor=vec4(c,v);}'});
+const DPR=devicePixelRatio||1,resU={value:new THREE.Vector2(innerWidth,innerHeight)};
+const rr=s=>{const x=Math.sin(s*127.1)*43758.5453;return x-Math.floor(x)};
+const brushV='attribute vec3 other;attribute float side,t,seed,wid;uniform vec2 res;uniform float tap;varying float vt,vs,vd;void main(){vt=t;vs=side;vd=seed;mat4 m=projectionMatrix*modelViewMatrix;vec4 a=m*vec4(position,1.),b=m*vec4(other,1.);vec2 d=b.xy/b.w*res*.5-a.xy/a.w*res*.5;if(t>.5)d=-d;d=normalize(d+vec2(1e-5));vec2 n=vec2(-d.y,d.x);float w=wid*(1.-tap*t);gl_Position=a;gl_Position.xy+=n*side*w/(res*.5)*a.w;}';
+const brushF='uniform vec3 c;uniform float al,fade;varying float vt,vs,vd;void main(){float st=smoothstep(.1,.7,.5+.5*sin(vs*8.+vd*40.));float dry=mix(1.,st,vt*vt*(.4+.6*fade));gl_FragColor=vec4(c,al*mix(1.,1.-vt,fade)*dry);}';
+const mkBrush=(al,fade,tap)=>new THREE.ShaderMaterial({transparent:true,depthWrite:false,side:THREE.DoubleSide,uniforms:{c:{value:new THREE.Color(INK)},res:resU,al:{value:al},fade:{value:fade},tap:{value:tap}},vertexShader:brushV,fragmentShader:brushF});
+const brush2V=`attribute vec3 other;attribute float side,t,seed,wid;uniform vec2 res;uniform float tap,allow;varying float vt,vs,vd;
+void main(){mat4 m=projectionMatrix*modelViewMatrix;vec4 ca=m*vec4(position,1.),cb=m*vec4(other,1.),c=m*vec4(mix(position,other,t),1.);
+vec2 sa=ca.xy/ca.w*res*.5,sb=cb.xy/cb.w*res*.5,d=sb-sa;float L=length(d);d=normalize(d+vec2(1e-5));vec2 n=vec2(-d.y,d.x);
+float tt=t;if(allow>.5&&(d.x-d.y*.6)<0.)tt=1.-t;
+float pr=(.35+.65*sqrt(smoothstep(0.,.1,tt)))*(1.-tap*smoothstep(.3,1.,tt));
+float off=side*wid*pr+sin(3.14159*t)*(seed-.5)*.05*L;
+vt=tt;vs=side;vd=seed;gl_Position=c;gl_Position.xy+=n*off/(res*.5)*c.w;}`;
+const brush2F=`uniform vec3 c;uniform float al,fade;varying float vt,vs,vd;
+float h(float x){return fract(sin(x*12.9898)*43758.5453);}
+void main(){float sr=h(floor((vs*.5+.5)*12.)+vd*91.);float bristle=step(vt*vt*.85*(.5+.5*fade),sr);
+float ed=1.-.25*h(floor(vt*40.)+vd*51.)*(.3+vt);
+gl_FragColor=vec4(c,al*bristle*step(abs(vs),ed)*mix(1.,1.-vt,fade));}`;
+const mkBrush2=(al,fade,tap,allow)=>new THREE.ShaderMaterial({transparent:true,depthWrite:false,side:THREE.DoubleSide,uniforms:{c:{value:new THREE.Color(INK)},res:resU,al:{value:al},fade:{value:fade},tap:{value:tap},allow:{value:allow}},vertexShader:brush2V,fragmentShader:brush2F});
+function ribbon2(segs,wid){
+ const P=[],O=[],Sd=[],Tt=[],Sc=[],Wd=[],I=[],N=8;let n=0;
+ segs.forEach((s,i)=>{const w=wid*(.8+.4*rr(i*7.3)),sc=rr(i*3.1);
+  for(let k=0;k<=N;k++)for(const sd of[-1,1]){P.push(s[0],s[1],s[2]);O.push(s[3],s[4],s[5]);Sd.push(sd);Tt.push(k/N);Sc.push(sc);Wd.push(w)}
+  for(let k=0;k<N;k++){const a=n+k*2;I.push(a,a+1,a+2,a+1,a+3,a+2)}n+=(N+1)*2});
+ const g=new THREE.BufferGeometry(),f=(key,a,z)=>g.setAttribute(key,new THREE.Float32BufferAttribute(a,z));
+ f('position',P,3);f('other',O,3);f('side',Sd,1);f('t',Tt,1);f('seed',Sc,1);f('wid',Wd,1);g.setIndex(I);return g}
+const mist=[];
+(function(){const cv=document.createElement('canvas');cv.width=256;cv.height=128;const c=cv.getContext('2d');
+ for(let i=0;i<7;i++){const x=40+rr(i*5.1)*176,y=40+rr(i*2.3)*48,r=30+rr(i*9.7)*30,g=c.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,'rgba(255,255,255,.55)');g.addColorStop(1,'rgba(255,255,255,0)');c.fillStyle=g;c.fillRect(0,0,256,128)}
+ const tex=new THREE.CanvasTexture(cv);
+ for(let i=0;i<0;i++){const m=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,color:0xd8d0bd,transparent:true,opacity:.16+.14*rr(i*4.7),depthWrite:false}));
+  m.position.set(-4+rr(i*1.7)*18,.6+rr(i*3.3)*2.2,-6+rr(i*6.1)*13);const s=7+rr(i*8.2)*7;m.scale.set(s,s*.5,1);m.renderOrder=-5;lvl.add(m);mist.push(m)}})();
+function setMist(){mist.forEach(m=>m.material.color.setHex(darkLines?0xd8d0bd:0x9aa4b0))}
+const lineMat=mkBrush2(.95,0,.8,1);
+function ribbon(segs,wid){
+ const P=[],O=[],Sd=[],Tt=[],Sc=[],Wd=[],I=[];let n=0;
+ segs.forEach((s,i)=>{const a=s.slice(0,3),b=s.slice(3),w=wid*(.8+.4*rr(i*7.3)),sc=rr(i*3.1);
+  [[a,b,0,-1],[a,b,0,1],[b,a,1,-1],[b,a,1,1]].forEach(([p,o,t,sd])=>{P.push(...p);O.push(...o);Sd.push(sd);Tt.push(t);Sc.push(sc);Wd.push(w)});
+  I.push(n,n+1,n+2,n+1,n+3,n+2);n+=4});
+ const g=new THREE.BufferGeometry(),f=(k,a,z)=>g.setAttribute(k,new THREE.Float32BufferAttribute(a,z));
+ f('position',P,3);f('other',O,3);f('side',Sd,1);f('t',Tt,1);f('seed',Sc,1);f('wid',Wd,1);g.setIndex(I);return g}
+const extMat=mkBrush2(.75,1,.97,0);
+const lineMatR=mkBrush2(.4,0,.8,1),extMatR=mkBrush2(.25,1,.97,0);
+const refl=new THREE.Group();refl.scale.y=-1;lvl.add(refl);
+const waterU={time:{value:0},c:{value:new THREE.Color(0xf2f1ec)},op:{value:.62}};
+const water=new THREE.Mesh(new THREE.PlaneGeometry(20,13).rotateX(-Math.PI/2),new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:waterU,
+ vertexShader:'varying vec2 u;void main(){u=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+ fragmentShader:`uniform float time,op;uniform vec3 c;varying vec2 u;
+float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1.,0.)),f.x),mix(h(i+vec2(0.,1.)),h(i+vec2(1.,1.)),f.x),f.y);}
+void main(){vec2 p=(u-.5)*2.;float r=length(p*vec2(1.,1.35));float edge=1.-smoothstep(.35,1.,r);
+float s=vn(vec2(u.x*4.+time*.04,u.y*60.+sin(time*.3+u.x*5.)*.8));float streak=.3+.7*smoothstep(.25,.85,s);
+float rip=.85+.15*sin(u.y*90.+time*.8);gl_FragColor=vec4(c,edge*streak*rip*op);}`}));
+water.position.set(5,.03,1.5);water.renderOrder=-3;lvl.add(water);
+function buildRefl(){
+ while(refl.children.length)refl.remove(refl.children[0]);
+ pieces.children.forEach(g=>{const p=g.userData.p;if(p.k==='ball')return;const c=mk(p);
+  Array.from(c.children).filter(o=>o.material&&o.material.colorWrite===false).forEach(o=>c.remove(o));
+  c.traverse(o=>{if(o.material){o.material.side=THREE.DoubleSide;o.material.transparent=true;o.material.depthWrite=false;o.material.opacity=.3;o.renderOrder=-4}});
+  refl.add(c)});
+ inkG.children.forEach(o=>{const m=o.clone();m.material=o.material===lineMat?lineMatR:extMatR;m.renderOrder=-4;refl.add(m)})}
 const FI=[[0,2,6,4],[1,3,7,5],[0,1,5,4],[2,3,7,6],[0,1,3,2],[4,5,7,6]],FN=[[-1,0,0],[1,0,0],[0,-1,0],[0,1,0],[0,0,-1],[0,0,1]];
 const vk=v=>[v.x,v.y,v.z].map(a=>Math.round(a*1000)).join(',');
 function buildLines(){
@@ -86,14 +144,14 @@ function buildLines(){
  const pos=[],vtx={};
  keep.forEach(f=>{for(let i=0;i<4;i++)if(cnt[ek(f,i)]===1){const a=f.vs[i],b=f.vs[(i+1)%4];pos.push(a.x,a.y,a.z,b.x,b.y,b.z);vtx[vk(a)]=a;vtx[vk(b)]=b}});
  const vs=Object.values(vtx);if(!vs.length)return;
- inkG.add(new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(pos,3)),lineMat));
+ const segs=[];for(let i=0;i<pos.length;i+=6)segs.push(pos.slice(i,i+6));inkG.add(new THREE.Mesh(ribbon2(segs,2.6*DPR),lineMat));
  const c=new THREE.Vector3();vs.forEach(v=>c.add(v));c.multiplyScalar(1/vs.length);
  const ep=[],ea=[],used={};
  for(const v of vs){const r=[v.x,v.y,v.z].map(a=>Math.round(a*4)/4);
-  for(let ax=0;ax<3;ax++){const k=ax+':'+r.join();if(used[k])continue;used[k]=1;const s=v.getComponent(ax)>=c.getComponent(ax)?1:-1,e=r.slice();e[ax]+=s*1.6;ep.push(...r,...e);ea.push(.5,0)}}
- const eg=new THREE.BufferGeometry();eg.setAttribute('position',new THREE.Float32BufferAttribute(ep,3));eg.setAttribute('a',new THREE.Float32BufferAttribute(ea,1));
- inkG.add(new THREE.LineSegments(eg,extMat))}
-function rebuild(){while(pieces.children.length)pieces.remove(pieces.children[0]);level.forEach(p=>pieces.add(mk(p)));buildLines();grid.position.y=plane.position.y=layer;info()}
+  for(let ax=0;ax<3;ax++){const k=ax+':'+r.join();if(used[k])continue;used[k]=1;const s=v.getComponent(ax)>=c.getComponent(ax)?1:-1,e=r.slice();e[ax]+=s*2.2;ep.push(...r,...e);ea.push(.5,0)}}
+ const es=[];for(let i=0;i<ep.length;i+=6)es.push(ep.slice(i,i+6));const eg=ribbon2(es,1.1*DPR);
+ inkG.add(new THREE.Mesh(eg,extMat))}
+function rebuild(){while(pieces.children.length)pieces.remove(pieces.children[0]);level.forEach(p=>pieces.add(mk(p)));buildLines();buildRefl();grid.position.y=plane.position.y=layer;info()}
 function info(){if(!playing&&placed)$('info').textContent=(tool==='erase'?'Erase':tool+(half?' (half)':'')+' · rot '+rot*90+'°')+' · layer '+layer}
 
 const S=(v,g,o)=>Math.round((v-o)/g)*g+o;
@@ -108,8 +166,15 @@ function snap(px,py,pz){
  return p}
 const ext=p=>p.r%2?[p.d/2,p.L/2]:[p.L/2,p.d/2];
 function clash(g){if(g.k==='ball')return false;return level.some(q=>{if(q.k==='ball')return false;
+ if(g.a===90&&q.a===90){if(g.r%2!==q.r%2)return false;const ev=g.r%2===0;if(Math.abs(ev?q.x-g.x:q.z-g.z)>.01)return false;return Math.abs(ev?q.z-g.z:q.x-g.x)<g.d/2+q.d/2-.001&&Math.abs(q.y-g.y)<(g.L+q.L)/2-.001}
  if(g.a===0&&q.a===0){if(Math.abs(q.y-g.y)>.01)return false;const[a,b]=ext(g),[c,d]=ext(q);return Math.abs(q.x-g.x)<a+c-.001&&Math.abs(q.z-g.z)<b+d-.001}
  return q.k===g.k&&q.x===g.x&&q.y===g.y&&q.z===g.z&&q.r===g.r&&q.a===g.a&&q.d===g.d})}
+function wallSnap(g,h,pt){
+ if(!h||h.a!==90||g.a!==90)return;
+ const ev=h.r%2===0,hd=h.d/2,gd=g.d/2,al=ev?pt.z-h.z:pt.x-h.x,dy=pt.y-h.y;
+ g.r=h.r;g.x=h.x;g.z=h.z;g.y=h.y;
+ if(Math.abs(al)/hd>=Math.abs(dy)/(h.L/2)){const o=Math.sign(al||1)*(hd+gd);if(ev)g.z=h.z+o;else g.x=h.x+o}
+ else g.y=h.y+Math.sign(dy||1)*(h.L/2+g.L/2)}
 const ray=new THREE.Raycaster();let ghost=null,gkey='',gp=null,gvalid=false,etarget=null;
 function updateGhost(){
  if(playing||!placed){if(ghost){lvl.remove(ghost);ghost=null;gkey=''}return}
@@ -120,7 +185,7 @@ function updateGhost(){
  if(hit){let ob=hit.object;while(ob&&!ob.userData.p&&ob!==plane)ob=ob.parent;
   if(tool==='erase'){if(ob&&ob.userData.p){etarget=ob.userData.p;ob.traverse(m=>{if(m.material&&m.material.emissive)m.material.emissive.setHex(0x992222)})}}
   else{const pt=lvl.worldToLocal(hit.point.clone());gp=snap(pt.x,ob===plane?layer:pt.y,pt.z);
-   const hp=ob.userData&&ob.userData.p;
+   const hp=ob.userData&&ob.userData.p;wallSnap(gp,hp,pt);
    if(hp&&hp.a===0&&hp.k!=='ball'&&gp.a===0&&gp.k!=='ball'){
     const[hx,hz]=ext(hp),[gx,gz]=ext(gp),dx=pt.x-hp.x,dz=pt.z-hp.z;gp.y=hp.y;
     if(Math.abs(dx)/hx>Math.abs(dz)/hz){gp.x=hp.x+Math.sign(dx)*(hx+gx);gp.z=gz<=hz?Math.max(hp.z-hz+gz,Math.min(hp.z+hz-gz,gp.z)):hp.z}
@@ -176,6 +241,8 @@ btn($('topbtns'),'Play',()=>playing?stopPlay():startPlay(),'go').id='go';
 btn($('topbtns'),'Reset',()=>{$('msg').textContent='';ended=false;stopPlay()});
 btn($('topbtns'),'⋯',()=>acts.classList.toggle('open'));
 btn(acts,'Move level',()=>{if(playing)stopPlay();placed=false;$('msg').textContent='Aim at a surface and tap to place';acts.classList.remove('open')});
+let darkLines=true;
+btn(acts,'Lines: dark',b=>{darkLines=!darkLines;INK=darkLines?0x151515:0xf4f4f0;fillOp=darkLines?.62:.38;lineMat.uniforms.c.value.setHex(INK);extMat.uniforms.c.value.setHex(INK);lineMatR.uniforms.c.value.setHex(INK);extMatR.uniforms.c.value.setHex(INK);waterU.c.value.setHex(darkLines?0xf2f1ec:0x1b1f26);waterU.op.value=darkLines?.62:.5;reticle.material.color.setHex(INK);grid.material.vertexColors=false;grid.material.color.setHex(INK);grid.material.needsUpdate=true;b.textContent='Lines: '+(darkLines?'dark':'light');setMist();acts.classList.remove('open');rebuild()});
 btn(acts,'Demo',()=>{if(playing)stopPlay();level=demo();rebuild()});
 btn(acts,'Clear',()=>{if(playing)stopPlay();level=[];rebuild()});
 btn(acts,'Copy level',b=>{try{navigator.clipboard.writeText(JSON.stringify(level));b.textContent='Copied'}catch(e){b.textContent='Copy failed'}setTimeout(()=>b.textContent='Copy level',1200)});
@@ -209,6 +276,8 @@ renderer.setAnimationLoop((t,frame)=>{
  if(frame&&hts&&!placed){const r=frame.getHitTestResults(hts);
   if(r.length){reticle.visible=true;reticle.matrix.fromArray(r[0].getPose(renderer.xr.getReferenceSpace()).transform.matrix)}else reticle.visible=false}
  if(playing&&world&&!ended)stepSim(dt);
+ const ss=renderer.xr.isPresenting&&renderer.xr.getSession();if(ss&&ss.renderState.baseLayer){const bl=ss.renderState.baseLayer;resU.value.set(bl.framebufferWidth,bl.framebufferHeight)}else renderer.getDrawingBufferSize(resU.value);
+ {const s=t/1000;waterU.time.value=s;refl.position.x=Math.sin(s*.7)*.04;refl.scale.x=1+Math.sin(s*.9)*.008}
  updateGhost();if(ctl.enabled)ctl.update();
  renderer.render(scene,cam)});
 addEventListener('resize',()=>{if(!renderer.xr.isPresenting){renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}});
